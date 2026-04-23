@@ -1,51 +1,96 @@
 # 江西职教云实习平台自动签到脚本
 
-这是一个用于**江西职教云实习平台**（自主实习）的自动签到脚本。
+这是一个用于江西职教云自主实习签到的自动化脚本，当前实现已经和真实平台链路对齐。
 
-## 功能特性
-1. **支持定时打卡**：默认每天早晚各打卡一次（支持 `08:05` 和 `19:05` 并自带随机延迟防止被检测）。
-2. **免密换 token**：通过平台抓包获取 `app_user_id` 之后，脚本能自动通过接口换取最新 token，实现长期免密。
-3. **支持图片轮询检测**：上传图片后自动解密图片 URL，并验证服务端图片已就绪后再提交签到，防止提交后在平台看到“破图”。
-4. **防重复打卡**：每次打卡前会自动拉取当日记录，同一时段内不会重复提交。
-5. **多账号支持**：可在一套配置里管理多个账号。
+## 当前状态
 
-## 快速开始
+- 旧的 `/portal-api/app/index/login` 账号密码直登接口已不再作为可用主链路
+- 当前真实可用方案是：
+  - 浏览器完成统一认证登录
+  - 获取 `app_user_id`
+  - 再调用 `checkAppUserIdNew` 换签到 Bearer token
+- 脚本已经支持“一次绑定，后续自动换 token”
 
-### 1. 准备运行环境
-本脚本依赖 Python 3 和部分第三方库。你需要先安装依赖：
-```bash
-pip install requests schedule gmssl cryptography
+## 主要功能
+
+- 支持 `--bind-account` 打开浏览器完成统一认证绑定
+- 支持自动保存地址、GCJ-02 经纬度、默认图、早图、晚图
+- 支持 token 缓存优先，失效后自动重新绑定
+- 支持上传图片后轮询校验，再提交签到
+- 支持多账号
+- 支持常驻定时模式和单次执行模式
+- 支持晚上只有 1 条记录时补签到第 2 次
+
+## 安装依赖
+
+```powershell
+pip install requests schedule pytest playwright selenium
 ```
 
-### 2. 填写配置信息
-你可以直接编辑 `auto_checkin.py` 顶部的全局配置区，或者使用 JSON 文件。
-**必填项：**
-- `APP_USER_ID`: 单点登录用的凭证（需要你在平台手动抓包一次得到）。
-- `CLOCK_ADDRESS`: 签到中文地址（例如："江西省南昌市..."）。
-- `LNG` 和 `LAT`: 签到的经纬度（注意：使用的是 **GCJ-02** 坐标系，即高德/腾讯地图坐标）。
-- `PROOF_IMAGES`: 你的签到截图。早间、晚间可配置不同图片，支持本地绝对路径和网络 `http://` 地址。
+如果要优先使用 Playwright，还需要额外安装浏览器驱动：
 
-### 3. 运行测试
-建议先使用 `--dry-run` 测试能否成功跑通逻辑（不产生实际提交）：
-```bash
-python auto_checkin.py --once --dry-run --verbose
+```powershell
+python -m playwright install
 ```
 
-确认无误后，强制执行一次真正打卡：
-```bash
+如果 Playwright 在本机不可用，脚本会自动回退到 Selenium + 系统 Edge/Chrome。
+
+## 常用命令
+
+首次绑定或重新绑定：
+
+```powershell
+python auto_checkin.py --bind-account
+```
+
+只执行一次真实签到：
+
+```powershell
 python auto_checkin.py --once
 ```
 
-### 4. 常驻后台运行
-如果需要它每天自动打卡，直接运行：
-```bash
+只测试链路，不真正提交：
+
+```powershell
+python auto_checkin.py --once --dry-run
+```
+
+强制签到一次：
+
+```powershell
+python auto_checkin.py --once --force
+```
+
+启动常驻模式：
+
+```powershell
 python auto_checkin.py
 ```
-脚本会自动在 `08:05` 和 `19:05` 左右各触发一次打卡。
 
-## 注意事项
-- 本项目中所谓的**“账号密码直登”接口（`/app/index/login`）在服务端已被废弃（404）**。因此必须使用 `app_user_id` 无感换 token 的方式运行。
-- 如果你的 token 在云端失效，可以利用 `--dry-run` 重新排查，或者再次手动抓包更新 `app_user_id`。
+查看帮助：
+
+```powershell
+python auto_checkin.py --help
+```
+
+## 说明
+
+- 绑定流程会先提示输入签到地址和图片路径，最后才打开浏览器登录
+- 地址会自动解析成脚本需要的 GCJ-02 经纬度
+- 如果 token 在读接口还能用、但写接口返回 `401`，脚本会自动重新换 token 并重试一次
+
+## 开发与验证
+
+测试命令：
+
+```powershell
+python -m pytest test_auto_checkin.py -q
+```
+
+更多本地同步和 GitHub 提交说明见：
+
+- [江智签到.md](./江智签到.md)
 
 ## 声明
+
 仅供学习和交流使用。

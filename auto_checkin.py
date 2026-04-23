@@ -56,9 +56,9 @@ USER_AGENT = (
 # 平台基础地址
 SXSX_BASE_URL = "https://sxsx.jxeduyun.com:7780"
 
-MANUAL_BEARER_TOKEN = ""
+MANUAL_BEARER_TOKEN = "eyJhbGciOiJIUzUxMiJ9.eyJsb2dpbl91c2VyX2lkX2tleSI6ImQyZjA3YTZlYjRjNTQ4MzliYTNlNjk2ODM3ZmNiNTg4IiwibG9naW5fdXNlcl9rZXkiOiIxMjJkZjlkNi1jMTg0LTRlODctODg4NS00MmU4YjYzY2FjYjcifQ.gM4TA-g7lCSkOdjeNM4z71zfGtW6Of4ZxWK6hpRvl1x_eTuOvAluuGFvvOwZdWwhWN6dSwoCGOaUVU2AciBpPQ"
 # 如果你不想填账号密码，也可以只填它，脚本会用它去换 token。
-APP_USER_ID = ""
+APP_USER_ID = "1500168100003386600"
 
 # 账号密码直登。
 # 建议优先填这个，脚本会直接调用 /portal-api/app/index/login 获取 token。
@@ -69,9 +69,6 @@ ENROLLMENT_YEAR = ""
 
 # 下面三个值会在登录成功后尽量自动补全。
 # 如果你已经知道，直接填上会更稳。
-# AUTONOMY_ID = "525676526a3a13ad106551a8994d6fbe"
-# USER_ID = "d2f07a6eb4c54839ba3e696837fcb588"
-# NICK_NAME = "邱日东"
 AUTONOMY_ID = ""
 USER_ID = ""
 NICK_NAME = ""
@@ -415,11 +412,12 @@ def populate_runtime_config(config: dict[str, Any], bearer_token: str, session: 
 
     if not config.get("autonomy_id"):
         plan_data = fetch_student_plan(config, bearer_token, session)
+        logging.info(f"Student plan data: {plan_data}")
         autonomy_plan = plan_data.get("autonomyPlan")
         if autonomy_plan and autonomy_plan.get("id"):
             config["autonomy_id"] = autonomy_plan["id"]
         else:
-            raise CheckinError("当前账号未查询到自主实习 autonomy_id，请手动在配置中填写")
+            raise CheckinError(f"当前账号未查询到自主实习 autonomy_id，请手动在配置中填写. plan_data: {plan_data}")
 
 
 def login_and_fetch_runtime_context(config: dict[str, Any], session: requests.Session) -> dict[str, Any]:
@@ -474,7 +472,6 @@ def fetch_sxsx_bearer_token(config: dict[str, Any], session: requests.Session | 
 
 
 def get_bearer_token(config: dict[str, Any], session: requests.Session) -> str:
-    config = deep_merge(DEFAULT_CONFIG, config)
     errors: list[str] = []
     token_file = token_file_for_account(config)
     cached = load_token_cache(token_file).get("sxsx_bearer_token")
@@ -680,6 +677,8 @@ def submit_checkin(
         headers=build_headers(bearer_token),
         timeout=int(config["request_timeout"]),
     )
+    if decoded.get("code") != 200:
+        logging.error(f"签到提交失败，接口返回: {decoded}")
     return decoded.get("code") == 200
 
 

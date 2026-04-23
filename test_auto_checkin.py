@@ -54,6 +54,22 @@ def test_extract_upload_remark_from_encrypted_response():
     assert module.extract_upload_remark(response) == "/file6/upload/2026/04/23/d05e76dc037e43fd95da52bd301a8058.png"
 
 
+def test_extract_upload_file_info_from_top_level_common_upload_response():
+    module = load_module()
+
+    response = {
+        "code": 200,
+        "msg": "操作成功",
+        "id": "file-id-1",
+        "url": "/file6/upload/2026/04/23/a.jpg",
+    }
+
+    assert module.extract_upload_file_info(response) == {
+        "id": "file-id-1",
+        "url": "/file6/upload/2026/04/23/a.jpg",
+    }
+
+
 def test_slot_duplicate_detection_uses_time_window():
     module = load_module()
     clocks = [
@@ -624,7 +640,7 @@ def test_run_checkin_refreshes_token_and_retries_upload_on_401(monkeypatch):
     monkeypatch.setattr(module, "upload_image", fake_upload_image)
     monkeypatch.setattr(module, "wait_for_uploaded_image", lambda config, remark, session: True)
 
-    def fake_submit_checkin(config, bearer_token, remark, session, now):
+    def fake_submit_checkin(config, bearer_token, remark, session, now, slot=None):
         submit_tokens.append(bearer_token)
         return True
 
@@ -728,6 +744,7 @@ def test_practice_plan_submit_uses_plan_id_and_file_id(monkeypatch):
         "file-1",
         object(),
         datetime(2026, 4, 23, 8, 5, 0),
+        {"name": "morning"},
     )
 
     assert ok is True
@@ -750,6 +767,40 @@ def test_practice_plan_submit_uses_plan_id_and_file_id(monkeypatch):
     ]
 
 
+def test_practice_plan_evening_submit_uses_sign_out_clock_type(monkeypatch):
+    module = load_module()
+    calls = []
+
+    def fake_request_json(session, method, url, **kwargs):
+        calls.append(kwargs.get("json"))
+        return {"code": 200}
+
+    monkeypatch.setattr(module, "request_json", fake_request_json)
+
+    ok = module.submit_checkin(
+        {
+            "sxsx_base_url": "https://example.test",
+            "request_timeout": 30,
+            "plan_type": "practicePlan",
+            "practice_plan_id": "plan-1",
+            "user_id": "user-1",
+            "user_name": "student-name",
+            "nick_name": "学生",
+            "clock_address": "地址",
+            "clock_type": "签到",
+            "clock_content": "",
+        },
+        "TOKEN",
+        "file-1",
+        object(),
+        datetime(2026, 4, 23, 19, 5, 0),
+        {"name": "evening"},
+    )
+
+    assert ok is True
+    assert calls[0]["clockType"] == "签退"
+
+
 def test_practice_plan_run_checkin_skips_uploaded_image_url_verification(monkeypatch):
     module = load_module()
     submitted = []
@@ -767,11 +818,12 @@ def test_practice_plan_run_checkin_skips_uploaded_image_url_verification(monkeyp
 
     monkeypatch.setattr(module, "wait_for_uploaded_image", fail_wait_for_uploaded_image)
 
-    def fake_submit_checkin(config, bearer_token, remark, session, now):
+    def fake_submit_checkin(config, bearer_token, remark, session, now, slot=None):
         submitted.append(remark)
         return True
 
     monkeypatch.setattr(module, "submit_checkin", fake_submit_checkin)
+    monkeypatch.setattr(module, "wait_for_submitted_checkin_record", lambda *args, **kwargs: True)
 
     ok = module.run_checkin(
         config={

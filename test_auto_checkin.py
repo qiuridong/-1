@@ -247,8 +247,32 @@ def test_populate_runtime_config_rejects_stale_autonomy_id_when_plan_missing(mon
     with pytest.raises(module.CheckinError) as exc_info:
         module.populate_runtime_config(config, "TOKEN", object())
 
-    assert "未查询到自主实习 autonomy_id" in str(exc_info.value)
+    assert "未查询到可用实习计划" in str(exc_info.value)
     assert config["autonomy_id"] == ""
+
+
+def test_populate_runtime_config_accepts_practice_plan(monkeypatch):
+    module = load_module()
+    config = {"app_user_id": "new-app", "user_id": "", "nick_name": "", "autonomy_id": ""}
+
+    monkeypatch.setattr(
+        module,
+        "fetch_user_info",
+        lambda config, token, session: {"userId": "user-1", "userName": "student-name", "nickName": "学生"},
+    )
+    monkeypatch.setattr(
+        module,
+        "fetch_student_plan",
+        lambda config, token, session: {"practicePlan": {"planId": "plan-1", "planName": "普通实习计划"}},
+    )
+
+    module.populate_runtime_config(config, "TOKEN", object())
+
+    assert config["plan_type"] == "practicePlan"
+    assert config["practice_plan_id"] == "plan-1"
+    assert config["user_id"] == "user-1"
+    assert config["user_name"] == "student-name"
+    assert config["nick_name"] == "学生"
 
 
 def test_apply_account_updates_updates_root_config():
@@ -629,6 +653,101 @@ def test_run_checkin_refreshes_token_and_retries_upload_on_401(monkeypatch):
     assert upload_tokens == ["OLD_TOKEN", "NEW_TOKEN"]
     assert submit_tokens == ["NEW_TOKEN"]
     assert refreshed == ["1500"]
+
+
+def test_practice_plan_daily_query_uses_practice_clock_endpoint(monkeypatch):
+    module = load_module()
+    calls = []
+
+    class Session:
+        def request(self, method, url, **kwargs):
+            calls.append((method, url, kwargs.get("params")))
+
+            class Response:
+                def raise_for_status(self):
+                    return None
+
+                def json(self):
+                    return {"code": 200, "rows": []}
+
+            return Response()
+
+    rows = module.get_daily_clocks(
+        {
+            "sxsx_base_url": "https://example.test",
+            "request_timeout": 30,
+            "plan_type": "practicePlan",
+            "practice_plan_id": "plan-1",
+            "user_id": "user-1",
+        },
+        "TOKEN",
+        datetime(2026, 4, 23).date(),
+        Session(),
+    )
+
+    assert rows == []
+    assert calls == [
+        (
+            "GET",
+            "https://example.test/portal-api/practiceClock/practiceClock/getStuDailyClock",
+            {
+                "planId": "plan-1",
+                "userId": "user-1",
+                "queryDate": "2026-04-23",
+                "beginQueryDate": "",
+                "endQueryDate": "",
+            },
+        )
+    ]
+
+
+def test_practice_plan_submit_uses_plan_id_and_file_id(monkeypatch):
+    module = load_module()
+    calls = []
+
+    def fake_request_json(session, method, url, **kwargs):
+        calls.append((method, url, kwargs.get("json")))
+        return {"code": 200}
+
+    monkeypatch.setattr(module, "request_json", fake_request_json)
+
+    ok = module.submit_checkin(
+        {
+            "sxsx_base_url": "https://example.test",
+            "request_timeout": 30,
+            "plan_type": "practicePlan",
+            "practice_plan_id": "plan-1",
+            "user_id": "user-1",
+            "user_name": "student-name",
+            "nick_name": "学生",
+            "clock_address": "地址",
+            "clock_type": "签到",
+            "clock_content": "",
+        },
+        "TOKEN",
+        "file-1",
+        object(),
+        datetime(2026, 4, 23, 8, 5, 0),
+    )
+
+    assert ok is True
+    assert calls == [
+        (
+            "POST",
+            "https://example.test/portal-api/practiceClock/practiceClock/add",
+            {
+                "planId": "plan-1",
+                "userId": "user-1",
+                "userName": "student-name",
+                "nickName": "学生",
+                "clockAddress": "地址",
+                "fileId": "file-1",
+                "clockTime": "2026-04-23 08:05:00",
+                "clockType": "签到",
+                "clockContent": "",
+            },
+        )
+    ]
 
 
 def test_scheduler_evening_zero_records_runs_makeup_double_checkin(monkeypatch):

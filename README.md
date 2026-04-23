@@ -20,11 +20,13 @@
 - 支持多账号
 - 支持常驻定时模式和单次执行模式
 - 支持晚上只有 1 条记录时补签到第 2 次
+- 支持晚上 0 条记录时自动连签两次：先早图，间隔 10 秒后晚图
+- 支持立即执行常驻模式同款任务，便于不等定时点测试
 
 ## 安装依赖
 
 ```powershell
-pip install requests schedule pytest playwright selenium
+python -m pip install requests schedule pytest playwright selenium
 ```
 
 如果要优先使用 Playwright，还需要额外安装浏览器驱动：
@@ -67,6 +69,14 @@ python auto_checkin.py --once --force
 python auto_checkin.py
 ```
 
+立即执行常驻模式同款晚上任务：
+
+```powershell
+python auto_checkin.py --run-scheduled-slot-now evening
+```
+
+如果当天记录为 `0` 条，晚间同款任务会自动先用早图签到一次，等待 `10` 秒，再用晚图签到一次。
+
 查看帮助：
 
 ```powershell
@@ -78,6 +88,8 @@ python auto_checkin.py --help
 - 绑定流程会先提示输入签到地址和图片路径，最后才打开浏览器登录
 - 地址会自动解析成脚本需要的 GCJ-02 经纬度
 - 如果 token 在读接口还能用、但写接口返回 `401`，脚本会自动重新换 token 并重试一次
+- 提交到 GitHub 的源码已脱敏，真实账号、token、地址和图片路径应只保存在本地 `checkin_config.json` / `token.json`
+- 不要提交 `checkin_config.json`、`token.json`、`checkin.log`、缓存目录或个人图片
 
 ## 开发与验证
 

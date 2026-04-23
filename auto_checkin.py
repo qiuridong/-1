@@ -59,16 +59,16 @@ CHROME_BINARY_PATH = Path(r"C:\Program Files\Google\Chrome\Application\chrome.ex
 # 平台基础地址
 SXSX_BASE_URL = "https://sxsx.jxeduyun.com:7780"
 
-MANUAL_BEARER_TOKEN = "eyJhbGciOiJIUzUxMiJ9.eyJsb2dpbl91c2VyX2lkX2tleSI6ImE2ZGY0ODY0ZTcwOTRlN2I4MDIyMGVkMzRkYTY5MGZjIiwibG9naW5fdXNlcl9rZXkiOiI4MDFiZTgwNS05Mzg0LTQxYjUtODdkMC1lMjVkNDBiOTc1ODAifQ.1UwCobJHrnDMtJIAF6qTOcxML5eFkjns8kzgLJeNoe2jJnCeMHw1ZpDeot4MH882dU_JlJP0dYPLwW2wQb8N4w"
+MANUAL_BEARER_TOKEN = ""
 # 可以留空。脚本会优先复用缓存/手填 token，不可用时再走 app_user_id 换 token。
-APP_USER_ID = "1500168100003386600"
+APP_USER_ID = ""
 
 # 预留字段。旧的 /portal-api/app/index/login 已废弃，当前脚本不会再尝试它。
 # 目前平台真实登录链路经过统一认证和点选验证码；脚本主链路仍是 app_user_id -> checkAppUserIdNew。
-LOGIN_ACCOUNT = "19917121570"
-LOGIN_PASSWORD = "qrd13479749420"
+LOGIN_ACCOUNT = ""
+LOGIN_PASSWORD = ""
 LOGIN_USER_TYPE = "student"
-ENROLLMENT_YEAR = "2026"
+ENROLLMENT_YEAR = ""
 
 # 下面三个值会在登录成功后尽量自动补全。
 # 如果你已经知道，直接填上会更稳。
@@ -76,20 +76,19 @@ AUTONOMY_ID = ""
 USER_ID = ""
 NICK_NAME = ""
 
-# 默认签到地址。
-# 这里已经按你最开始发包里的地址预填。
-CLOCK_ADDRESS = "江西省南昌市青云谱区青云谱镇文化广场天和百货1楼东北约77米"
+# 默认签到地址。实际使用建议通过 --bind-account 写入 checkin_config.json。
+CLOCK_ADDRESS = ""
 
 # 签到经纬度，GCJ-02
-LNG = 115.924
-LAT = 28.6242
+LNG = 0.0
+LAT = 0.0
 
 # 图片配置。
 # 支持本地文件路径，也支持网络图片 URL。
 PROOF_IMAGE_PATH = "proof.jpg"
 PROOF_IMAGES = {
     "morning": "proof_morning.jpg",
-    "evening": r"J:\Snipaste_2026-04-23_17-33-16.png",
+    "evening": "proof_evening.jpg",
 }
 
 # 是否上传图片。
@@ -215,6 +214,11 @@ def save_config(config: dict[str, Any], config_path: Path = DEFAULT_CONFIG_FILE)
         json.dump(config, f, ensure_ascii=False, indent=2)
 
 
+def clear_account_identity_fields(config: dict[str, Any]) -> None:
+    for key in ("manual_bearer_token", "user_id", "nick_name", "autonomy_id"):
+        config[key] = ""
+
+
 def load_token_cache(token_file: Path = DEFAULT_TOKEN_FILE) -> dict[str, Any]:
     if not token_file.exists():
         return {}
@@ -297,8 +301,14 @@ def get_single_account_config(config: dict[str, Any], account_name: str | None =
     return account_configs[0]
 
 
-def apply_account_updates(config: dict[str, Any], updates: dict[str, Any], account_name: str | None = None) -> None:
-    cleaned = {key: value for key, value in updates.items() if value not in (None, "")}
+def apply_account_updates(
+    config: dict[str, Any],
+    updates: dict[str, Any],
+    account_name: str | None = None,
+    *,
+    keep_empty: bool = False,
+) -> None:
+    cleaned = dict(updates) if keep_empty else {key: value for key, value in updates.items() if value not in (None, "")}
     accounts = config.get("accounts") or []
 
     if accounts:
@@ -621,19 +631,23 @@ def fetch_student_plan(config: dict[str, Any], bearer_token: str, session: reque
 
 
 def populate_runtime_config(config: dict[str, Any], bearer_token: str, session: requests.Session, user_info: dict[str, Any] | None = None) -> None:
+    previous_user_id = str(config.get("user_id") or "")
     user_info = user_info or fetch_user_info(config, bearer_token, session)
     if user_info:
         config["user_id"] = user_info.get("userId") or config.get("user_id", "")
         config["nick_name"] = user_info.get("nickName") or config.get("nick_name", "")
+    current_user_id = str(config.get("user_id") or "")
+    if previous_user_id and current_user_id and previous_user_id != current_user_id:
+        config["autonomy_id"] = ""
 
-    if not config.get("autonomy_id"):
-        plan_data = fetch_student_plan(config, bearer_token, session)
-        logging.info(f"Student plan data: {plan_data}")
-        autonomy_plan = plan_data.get("autonomyPlan")
-        if autonomy_plan and autonomy_plan.get("id"):
-            config["autonomy_id"] = autonomy_plan["id"]
-        else:
-            raise CheckinError(f"当前账号未查询到自主实习 autonomy_id，请手动在配置中填写. plan_data: {plan_data}")
+    plan_data = fetch_student_plan(config, bearer_token, session)
+    logging.info(f"Student plan data: {plan_data}")
+    autonomy_plan = plan_data.get("autonomyPlan")
+    if autonomy_plan and autonomy_plan.get("id"):
+        config["autonomy_id"] = autonomy_plan["id"]
+    else:
+        config["autonomy_id"] = ""
+        raise CheckinError(f"当前账号未查询到自主实习 autonomy_id，请确认登录的是有实习计划的账号. plan_data: {plan_data}")
 
 
 def fetch_sxsx_bearer_token(config: dict[str, Any], session: requests.Session | None = None) -> str:
@@ -842,8 +856,22 @@ def bind_account(
     auth_user = fetch_auth_current_user(auth_state)
 
     account_config["app_user_id"] = str(auth_user["id"])
+    clear_account_identity_fields(account_config)
     if auth_user.get("nickName") and not account_config.get("nick_name"):
         account_config["nick_name"] = str(auth_user["nickName"])
+    apply_account_updates(
+        raw_config,
+        {
+            "app_user_id": account_config.get("app_user_id", ""),
+            "manual_bearer_token": "",
+            "user_id": "",
+            "nick_name": account_config.get("nick_name", ""),
+            "autonomy_id": "",
+        },
+        account_name=account_name,
+        keep_empty=True,
+    )
+    save_config(raw_config, config_path)
 
     bearer_token = fetch_sxsx_bearer_token(account_config, requests.Session())
     updates = {
@@ -870,6 +898,19 @@ def ensure_account_session(
     session = requests.Session()
     try:
         token = get_bearer_token(account_config, session)
+        apply_account_updates(
+            raw_config,
+            {
+                "app_user_id": account_config.get("app_user_id", ""),
+                "manual_bearer_token": account_config.get("manual_bearer_token", ""),
+                "user_id": account_config.get("user_id", ""),
+                "nick_name": account_config.get("nick_name", ""),
+                "autonomy_id": account_config.get("autonomy_id", ""),
+            },
+            account_name=account_name,
+        )
+        save_config(raw_config, config_path)
+        account_config = get_single_account_config(raw_config, account_name)
         return account_config, token
     except CheckinError as exc:
         logging.warning("当前 token 不可用，准备重新绑定: %s", exc)
@@ -1007,8 +1048,17 @@ def uploaded_image_url(config: dict[str, Any], remark: str) -> str:
 
 def image_path_for_slot(config: dict[str, Any], slot: dict[str, Any]) -> Path:
     proof_images = config.get("proof_images") or {}
-    slot_path = proof_images.get(slot.get("name"))
+    forced_slot_name = str(config.get("_forced_image_slot") or "")
+    slot_name = forced_slot_name or str(slot.get("name") or "")
+    slot_path = proof_images.get(slot_name)
     return resolve_local_path(slot_path or config["proof_image_path"])
+
+
+def image_source_for_slot(config: dict[str, Any], slot: dict[str, Any]) -> str:
+    proof_images = config.get("proof_images") or {}
+    forced_slot_name = str(config.get("_forced_image_slot") or "")
+    slot_name = forced_slot_name or str(slot.get("name") or "")
+    return str(proof_images.get(slot_name) or config["proof_image_path"])
 
 
 def prepare_upload_file(path_value: str, session: requests.Session, timeout: int) -> tuple[str, bytes, str]:
@@ -1059,7 +1109,7 @@ def wait_for_uploaded_image(config: dict[str, Any], remark: str, session: reques
 
 
 def upload_image(config: dict[str, Any], bearer_token: str, session: requests.Session, slot: dict[str, Any]) -> str:
-    image_source = str((config.get("proof_images") or {}).get(slot.get("name")) or config["proof_image_path"])
+    image_source = image_source_for_slot(config, slot)
     url = f"{config['sxsx_base_url']}/portal-api/practiceClock/practiceClock/uploadClockFile"
     file_name, file_bytes, mime_type = prepare_upload_file(image_source, session, int(config["request_timeout"]))
     response = session.post(
@@ -1169,6 +1219,49 @@ def run_checkin(
     raise CheckinError("签到接口未返回成功")
 
 
+def should_run_evening_makeup_double_checkin(slot_name: str, clocks: list[dict[str, Any]]) -> bool:
+    return slot_name == "evening" and len(clocks) == 0
+
+
+def run_slot_now(
+    config: dict[str, Any],
+    slot_name: str,
+    *,
+    raw_config: dict[str, Any] | None = None,
+    config_path: Path = DEFAULT_CONFIG_FILE,
+    bind_timeout: int = 300,
+) -> None:
+    slot = find_slot(config, slot_name, datetime.now())
+    try:
+        bearer_token = None
+        account_config = config
+        if raw_config is not None:
+            account_config, bearer_token = ensure_account_session(
+                raw_config,
+                config_path=config_path,
+                account_name=config.get("name"),
+                timeout_seconds=bind_timeout,
+            )
+        if slot_name == "evening":
+            session = requests.Session()
+            current_token = bearer_token or get_bearer_token(account_config, session)
+            clocks = get_daily_clocks(account_config, current_token, datetime.now().date(), session)
+            if should_run_evening_makeup_double_checkin(slot_name, clocks):
+                logging.info("当前为晚上且今日签到记录为 0，先补早图，再补晚图，两次间隔 10 秒")
+                morning_config = deepcopy(account_config)
+                morning_config["_forced_image_slot"] = "morning"
+                run_checkin(config=morning_config, slot_name="morning", bearer_token=current_token)
+                time.sleep(10)
+                evening_config = deepcopy(account_config)
+                evening_config["_forced_image_slot"] = "evening"
+                run_checkin(config=evening_config, slot_name="evening", bearer_token=current_token)
+                return
+            bearer_token = current_token
+        run_checkin(config=account_config, slot_name=slot_name, bearer_token=bearer_token)
+    except Exception:
+        logging.exception("%s 执行失败", slot.get("label", slot_name))
+
+
 def run_slot_with_jitter(
     config: dict[str, Any],
     slot_name: str,
@@ -1183,19 +1276,13 @@ def run_slot_with_jitter(
         delay = random.randint(0, jitter_seconds)
         logging.info("%s 随机延迟 %s 秒后执行", slot.get("label", slot_name), delay)
         time.sleep(delay)
-    try:
-        bearer_token = None
-        account_config = config
-        if raw_config is not None:
-            account_config, bearer_token = ensure_account_session(
-                raw_config,
-                config_path=config_path,
-                account_name=config.get("name"),
-                timeout_seconds=bind_timeout,
-            )
-        run_checkin(config=account_config, slot_name=slot_name, bearer_token=bearer_token)
-    except Exception:
-        logging.exception("%s 执行失败", slot.get("label", slot_name))
+    run_slot_now(
+        config,
+        slot_name,
+        raw_config=raw_config,
+        config_path=config_path,
+        bind_timeout=bind_timeout,
+    )
 
 
 def run_scheduler(config: dict[str, Any], *, config_path: Path = DEFAULT_CONFIG_FILE, bind_timeout: int = 300) -> None:
@@ -1237,6 +1324,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--bind-account", action="store_true", help="打开浏览器登录一次并自动绑定 app_user_id")
     parser.add_argument("--bind-timeout", type=int, default=300, help="绑定流程等待登录完成的秒数")
     parser.add_argument("--once", action="store_true", help="立即执行一次签到")
+    parser.add_argument(
+        "--run-scheduled-slot-now",
+        choices=["morning", "evening"],
+        help="立即执行一次定时模式同款任务，用于测试补签和调度逻辑",
+    )
     parser.add_argument("--account", help="只执行指定账户 name")
     parser.add_argument("--slot", choices=["morning", "evening"], help="指定签到时段")
     parser.add_argument("--dry-run", action="store_true", help="只验证 Token 和查询记录，不提交")
@@ -1270,6 +1362,19 @@ def main() -> int:
                 bound.get("user_id", ""),
                 bound.get("autonomy_id", ""),
             )
+            return 0
+        if args.run_scheduled_slot_now:
+            account_configs = list(iter_account_configs(config, args.account))
+            if not account_configs:
+                raise CheckinError(f"未找到账户: {args.account}")
+            for account_config in account_configs:
+                run_slot_now(
+                    account_config,
+                    args.run_scheduled_slot_now,
+                    raw_config=config,
+                    config_path=config_path,
+                    bind_timeout=args.bind_timeout,
+                )
             return 0
         if args.once or args.dry_run:
             account_names = [account.get("name", "default") for account in iter_account_configs(config, args.account)]

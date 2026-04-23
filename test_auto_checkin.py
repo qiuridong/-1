@@ -1,4 +1,5 @@
 import importlib.util
+import sys
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -236,6 +237,20 @@ def test_get_bearer_token_falls_back_to_manual_token(monkeypatch):
     assert token == "MANUAL_TOKEN"
 
 
+def test_populate_runtime_config_rejects_stale_autonomy_id_when_plan_missing(monkeypatch):
+    module = load_module()
+    config = {"app_user_id": "new-app", "user_id": "old-user", "nick_name": "", "autonomy_id": "old-plan"}
+
+    monkeypatch.setattr(module, "fetch_user_info", lambda config, token, session: {"userId": "new-user", "nickName": "新用户"})
+    monkeypatch.setattr(module, "fetch_student_plan", lambda config, token, session: {})
+
+    with pytest.raises(module.CheckinError) as exc_info:
+        module.populate_runtime_config(config, "TOKEN", object())
+
+    assert "未查询到自主实习 autonomy_id" in str(exc_info.value)
+    assert config["autonomy_id"] == ""
+
+
 def test_apply_account_updates_updates_root_config():
     module = load_module()
     config = {"app_user_id": "", "user_id": "", "nick_name": "", "autonomy_id": ""}
@@ -404,8 +419,58 @@ def test_bind_account_updates_config_and_saves(monkeypatch):
     assert raw_config["accounts"][0]["user_id"] == "user-1"
     assert raw_config["accounts"][0]["autonomy_id"] == "auto-1"
     assert order == ["prompt", "login"]
-    assert len(saved) == 2
+    assert len(saved) == 3
     assert saved[0][0] == Path("E:/checkin_config.json")
+
+
+def test_bind_account_clears_stale_identity_fields_before_token_exchange(monkeypatch):
+    module = load_module()
+    raw_config = {
+        "accounts": [
+            {
+                "name": "default",
+                "app_user_id": "old-app",
+                "manual_bearer_token": "OLD_TOKEN",
+                "user_id": "old-user",
+                "nick_name": "旧用户",
+                "autonomy_id": "old-plan",
+            }
+        ]
+    }
+    seen = {}
+
+    monkeypatch.setattr(module, "prompt_bind_setup", lambda account_config: {})
+    monkeypatch.setattr(module, "interactive_auth_login", lambda timeout_seconds=300: {"auth_token": "AUTH"})
+    monkeypatch.setattr(module, "fetch_auth_current_user", lambda auth_state, session=None: {"id": "new-app"})
+
+    def fake_fetch_sxsx_bearer_token(config, session=None):
+        seen.update(
+            {
+                "app_user_id": config.get("app_user_id"),
+                "manual_bearer_token": config.get("manual_bearer_token"),
+                "user_id": config.get("user_id"),
+                "nick_name": config.get("nick_name"),
+                "autonomy_id": config.get("autonomy_id"),
+            }
+        )
+        config["manual_bearer_token"] = "NEW_TOKEN"
+        config["user_id"] = "new-user"
+        config["nick_name"] = "新用户"
+        config["autonomy_id"] = "new-plan"
+        return "NEW_TOKEN"
+
+    monkeypatch.setattr(module, "fetch_sxsx_bearer_token", fake_fetch_sxsx_bearer_token)
+    monkeypatch.setattr(module, "save_config", lambda config, config_path: None)
+
+    module.bind_account(raw_config, config_path=Path("E:/checkin_config.json"))
+
+    assert seen == {
+        "app_user_id": "new-app",
+        "manual_bearer_token": "",
+        "user_id": "",
+        "nick_name": "",
+        "autonomy_id": "",
+    }
 
 
 def test_prompt_bind_setup_uses_input_order(monkeypatch):
@@ -464,6 +529,26 @@ def test_ensure_account_session_uses_existing_token_without_rebind(monkeypatch):
 
     assert token == "TOKEN"
     assert account_config["manual_bearer_token"] == "OLD"
+
+
+def test_ensure_account_session_saves_runtime_identity_updates(monkeypatch):
+    module = load_module()
+    raw_config = {"manual_bearer_token": "OLD", "autonomy_id": "old-plan"}
+    saved = []
+
+    def fake_get_bearer_token(config, session):
+        config["autonomy_id"] = "new-plan"
+        config["user_id"] = "new-user"
+        return "TOKEN"
+
+    monkeypatch.setattr(module, "get_bearer_token", fake_get_bearer_token)
+    monkeypatch.setattr(module, "save_config", lambda config, config_path: saved.append((config_path, config.copy())))
+
+    account_config, token = module.ensure_account_session(raw_config, config_path=Path("E:/c.json"))
+
+    assert token == "TOKEN"
+    assert account_config["autonomy_id"] == "new-plan"
+    assert saved == [(Path("E:/c.json"), {"manual_bearer_token": "OLD", "autonomy_id": "new-plan", "user_id": "new-user"})]
 
 
 def test_ensure_account_session_rebinds_when_token_invalid(monkeypatch):
@@ -544,6 +629,108 @@ def test_run_checkin_refreshes_token_and_retries_upload_on_401(monkeypatch):
     assert upload_tokens == ["OLD_TOKEN", "NEW_TOKEN"]
     assert submit_tokens == ["NEW_TOKEN"]
     assert refreshed == ["1500"]
+
+
+def test_scheduler_evening_zero_records_runs_makeup_double_checkin(monkeypatch):
+    module = load_module()
+    calls = []
+    sleeps = []
+
+    account_config = {
+        "name": "default",
+        "slots": [
+            {"name": "morning", "label": "早上签到", "start_hour": 0, "end_hour": 12},
+            {"name": "evening", "label": "晚上签到", "start_hour": 12, "end_hour": 24},
+        ],
+    }
+
+    monkeypatch.setattr(
+        module,
+        "find_slot",
+        lambda config, slot_name, now: {"name": "evening", "label": "晚上签到", "start_hour": 12, "end_hour": 24},
+    )
+    monkeypatch.setattr(module, "ensure_account_session", lambda *args, **kwargs: (account_config, "TOKEN"))
+    monkeypatch.setattr(module.requests, "Session", lambda: SimpleNamespace())
+    monkeypatch.setattr(module, "get_daily_clocks", lambda config, bearer_token, query_date, session: [])
+    monkeypatch.setattr(module.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    def fake_run_checkin(**kwargs):
+        calls.append((kwargs["slot_name"], kwargs["config"].get("_forced_image_slot")))
+        return True
+
+    monkeypatch.setattr(module, "run_checkin", fake_run_checkin)
+
+    module.run_slot_with_jitter(
+        account_config,
+        "evening",
+        raw_config={"accounts": [account_config]},
+        bind_timeout=300,
+    )
+
+    assert calls == [("morning", "morning"), ("evening", "evening")]
+    assert sleeps == [10]
+
+
+def test_scheduler_evening_nonzero_records_keeps_single_evening_run(monkeypatch):
+    module = load_module()
+    calls = []
+    sleeps = []
+
+    account_config = {
+        "name": "default",
+        "slots": [
+            {"name": "morning", "label": "早上签到", "start_hour": 0, "end_hour": 12},
+            {"name": "evening", "label": "晚上签到", "start_hour": 12, "end_hour": 24},
+        ],
+    }
+
+    monkeypatch.setattr(
+        module,
+        "find_slot",
+        lambda config, slot_name, now: {"name": "evening", "label": "晚上签到", "start_hour": 12, "end_hour": 24},
+    )
+    monkeypatch.setattr(module, "ensure_account_session", lambda *args, **kwargs: (account_config, "TOKEN"))
+    monkeypatch.setattr(module.requests, "Session", lambda: SimpleNamespace())
+    monkeypatch.setattr(
+        module,
+        "get_daily_clocks",
+        lambda config, bearer_token, query_date, session: [{"clockTime": "2026-04-23 08:00:00"}],
+    )
+    monkeypatch.setattr(module.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    def fake_run_checkin(**kwargs):
+        calls.append((kwargs["slot_name"], kwargs["config"].get("_forced_image_slot")))
+        return True
+
+    monkeypatch.setattr(module, "run_checkin", fake_run_checkin)
+
+    module.run_slot_with_jitter(
+        account_config,
+        "evening",
+        raw_config={"accounts": [account_config]},
+        bind_timeout=300,
+    )
+
+    assert calls == [("evening", None)]
+    assert sleeps == []
+
+
+def test_main_routes_run_scheduled_slot_now(monkeypatch):
+    module = load_module()
+    calls = []
+
+    monkeypatch.setattr(sys, "argv", ["auto_checkin.py", "--run-scheduled-slot-now", "evening"])
+    monkeypatch.setattr(module, "configure_logging", lambda verbose: None)
+    monkeypatch.setattr(module, "load_config", lambda config_path=None: {"accounts": [{"name": "default"}]})
+    monkeypatch.setattr(module, "iter_account_configs", lambda config, account_name=None: [{"name": "default"}])
+    monkeypatch.setattr(
+        module,
+        "run_slot_now",
+        lambda config, slot_name, **kwargs: calls.append((config.get("name"), slot_name, kwargs.get("raw_config"))),
+    )
+
+    assert module.main() == 0
+    assert calls == [("default", "evening", {"accounts": [{"name": "default"}]})]
 
 
 def test_prepare_upload_file_supports_remote_url(monkeypatch):

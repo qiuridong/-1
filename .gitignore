@@ -1,0 +1,12 @@
+__pycache__/
+.pytest_cache/
+*.pyc
+checkin_config.json
+token.json
+token.*.json
+checkin.log
+*.har
+har_extract/
+proof*.jpg
+proof*.jpeg
+proof*.png

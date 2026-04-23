@@ -32,7 +32,13 @@ from uuid import uuid4
 import requests
 
 
-SCRIPT_DIR = Path(__file__).resolve().parent
+def get_script_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+
+SCRIPT_DIR = get_script_dir()
 DEFAULT_CONFIG_FILE = SCRIPT_DIR / "checkin_config.json"
 DEFAULT_TOKEN_FILE = SCRIPT_DIR / "token.json"
 DEFAULT_LOG_FILE = SCRIPT_DIR / "checkin.log"
@@ -232,6 +238,8 @@ def save_token_cache(tokens: dict[str, Any], token_file: Path = DEFAULT_TOKEN_FI
 
 
 def update_script_manual_token(token: str, script_path: Path = Path(__file__).resolve()) -> None:
+    if getattr(sys, "frozen", False):
+        return
     try:
         original = script_path.read_text(encoding="utf-8")
         updated = re.sub(
@@ -804,6 +812,12 @@ def interactive_auth_login_via_selenium(timeout_seconds: int = 300) -> dict[str,
 
 def interactive_auth_login(timeout_seconds: int = 300) -> dict[str, Any]:
     errors: list[str] = []
+    if getattr(sys, "frozen", False):
+        try:
+            return interactive_auth_login_via_selenium(timeout_seconds=timeout_seconds)
+        except Exception as exc:
+            errors.append(f"Selenium 失败: {exc}")
+
     try:
         return interactive_auth_login_via_playwright(timeout_seconds=timeout_seconds)
     except Exception as exc:

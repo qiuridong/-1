@@ -39,6 +39,48 @@ python -m playwright install
 
 ## 常用命令
 
+### Windows EXE 版
+
+`win` 分支已提供打包好的 Windows 可执行文件：
+
+- [下载 jiangzhi-checkin.exe](https://github.com/qiuridong/-1/raw/win/dist/jiangzhi-checkin.exe)
+
+EXE 版不需要安装 Python，也不需要执行 `python -m playwright install`。它使用本机已安装的 Edge 或 Chrome 完成浏览器授权。
+
+首次绑定：
+
+```powershell
+.\jiangzhi-checkin.exe --bind-account
+```
+
+只测试链路，不真正提交：
+
+```powershell
+.\jiangzhi-checkin.exe --once --dry-run
+```
+
+真实签到一次：
+
+```powershell
+.\jiangzhi-checkin.exe --once
+```
+
+立即执行常驻模式同款晚上任务：
+
+```powershell
+.\jiangzhi-checkin.exe --run-scheduled-slot-now evening
+```
+
+常驻定时运行：
+
+```powershell
+.\jiangzhi-checkin.exe
+```
+
+说明：如果 `checkin_config.json` 不在 EXE 同目录，请加 `--config 配置文件路径`。
+
+### Python 版
+
 首次绑定或重新绑定：
 
 ```powershell
@@ -67,12 +109,6 @@ python auto_checkin.py --once --force
 
 ```powershell
 python auto_checkin.py
-```
-
-立即执行常驻模式同款晚上任务：
-
-```powershell
-python auto_checkin.py --run-scheduled-slot-now evening
 ```
 
 如果当天记录为 `0` 条，晚间同款任务会自动先用早图签到一次，等待 `10` 秒，再用晚图签到一次。

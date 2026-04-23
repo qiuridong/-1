@@ -1295,7 +1295,7 @@ def run_checkin(
         if config.get("upload_image", True):
             remark = upload_image(config, current_token, session, slot)
             logging.info("图片上传成功: %s", remark)
-            if config.get("verify_uploaded_image", True):
+            if config.get("verify_uploaded_image", True) and not is_practice_plan(config):
                 if not wait_for_uploaded_image(config, remark, session):
                     raise CheckinError(f"图片上传后未能在限定时间内访问: {uploaded_image_url(config, remark)}")
                 logging.info("图片已确认可访问")

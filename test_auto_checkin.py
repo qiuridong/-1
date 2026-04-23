@@ -750,6 +750,46 @@ def test_practice_plan_submit_uses_plan_id_and_file_id(monkeypatch):
     ]
 
 
+def test_practice_plan_run_checkin_skips_uploaded_image_url_verification(monkeypatch):
+    module = load_module()
+    submitted = []
+
+    monkeypatch.setattr(
+        module,
+        "find_slot",
+        lambda config, slot_name, now: {"name": "morning", "label": "早上签到", "start_hour": 0, "end_hour": 12},
+    )
+    monkeypatch.setattr(module, "get_daily_clocks", lambda config, bearer_token, query_date, session: [])
+    monkeypatch.setattr(module, "upload_image", lambda config, bearer_token, session, slot: "file-id-1")
+
+    def fail_wait_for_uploaded_image(config, remark, session):
+        raise AssertionError("practicePlan uploads return fileId, not an image URL")
+
+    monkeypatch.setattr(module, "wait_for_uploaded_image", fail_wait_for_uploaded_image)
+
+    def fake_submit_checkin(config, bearer_token, remark, session, now):
+        submitted.append(remark)
+        return True
+
+    monkeypatch.setattr(module, "submit_checkin", fake_submit_checkin)
+
+    ok = module.run_checkin(
+        config={
+            "name": "default",
+            "plan_type": "practicePlan",
+            "practice_plan_id": "plan-1",
+            "user_id": "user-1",
+            "upload_image": True,
+            "verify_uploaded_image": True,
+            "skip_if_already_signed": True,
+        },
+        bearer_token="TOKEN",
+    )
+
+    assert ok is True
+    assert submitted == ["file-id-1"]
+
+
 def test_scheduler_evening_zero_records_runs_makeup_double_checkin(monkeypatch):
     module = load_module()
     calls = []

@@ -24,7 +24,7 @@ import sys
 import time
 import urllib.parse
 from copy import deepcopy
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -589,20 +589,38 @@ def extract_upload_remark(payload: dict[str, Any]) -> str:
 
 
 def extract_upload_file_id(payload: dict[str, Any]) -> str:
+    return extract_upload_file_info(payload)["id"]
+
+
+def extract_upload_file_info(payload: dict[str, Any]) -> dict[str, str]:
     decoded = decode_sxsx_response(payload)
     if decoded.get("code") != 200:
         raise CheckinError(f"上传图片失败: {decoded}")
 
+    file_id = ""
+    file_url = ""
     data = decoded.get("data")
+    candidates: list[dict[str, Any]] = []
     if isinstance(data, dict):
+        candidates.append(data)
+        nested = data.get("data")
+        if isinstance(nested, dict):
+            candidates.append(nested)
+    candidates.append(decoded)
+
+    for candidate in candidates:
         for key in ("id", "fileId"):
-            value = data.get(key)
+            value = candidate.get(key)
             if value:
-                return str(value)
-    for key in ("id", "fileId"):
-        value = decoded.get(key)
-        if value:
-            return str(value)
+                file_id = str(value)
+                break
+        for key in ("url", "filePath"):
+            value = candidate.get(key)
+            if value:
+                file_url = str(value)
+                break
+        if file_id:
+            return {"id": file_id, "url": file_url}
 
     raise CheckinError(f"上传成功但未找到文件 ID: {decoded}")
 
@@ -1088,6 +1106,16 @@ def has_clock_in_slot(clocks: list[dict[str, Any]], slot: dict[str, Any]) -> boo
     return False
 
 
+def clock_type_for_slot(config: dict[str, Any], slot: dict[str, Any] | None) -> str:
+    slot_name = str((slot or {}).get("name") or "")
+    clock_types = config.get("clock_types")
+    if isinstance(clock_types, dict) and clock_types.get(slot_name):
+        return str(clock_types[slot_name])
+    if is_practice_plan(config) and slot_name == "evening":
+        return "签退"
+    return str(config.get("clock_type") or "签到")
+
+
 def should_skip_existing_checkin(
     clocks: list[dict[str, Any]],
     slot: dict[str, Any],
@@ -1117,6 +1145,56 @@ def find_slot(config: dict[str, Any], slot_name: str | None, now: datetime) -> d
                 return slot
         raise CheckinError(f"未知签到时段: {slot_name}")
     return pick_slot(now, slots)
+
+
+def clock_record_signature(clock: dict[str, Any]) -> tuple[str, str, str, str]:
+    return (
+        str(clock.get("clockTime") or ""),
+        str(clock.get("clockType") or ""),
+        str(clock.get("clockAddress") or ""),
+        str(clock.get("filePath") or ""),
+    )
+
+
+def is_recent_clock_record(clock: dict[str, Any], submitted_at: datetime) -> bool:
+    clock_time = parse_clock_time(str(clock.get("clockTime", "")))
+    if not clock_time:
+        return True
+    return clock_time >= submitted_at.replace(microsecond=0) - timedelta(seconds=90)
+
+
+def wait_for_submitted_checkin_record(
+    config: dict[str, Any],
+    bearer_token: str,
+    session: requests.Session,
+    query_date: date,
+    before_clocks: list[dict[str, Any]],
+    submitted_at: datetime,
+    slot: dict[str, Any],
+) -> bool:
+    timeout = float(config.get("verify_submit_timeout", 15))
+    interval = float(config.get("verify_submit_interval", 2))
+    deadline = time.monotonic() + timeout
+    before_signatures = {clock_record_signature(clock) for clock in before_clocks}
+    last_rows: list[dict[str, Any]] = []
+
+    while True:
+        rows = get_daily_clocks(config, bearer_token, query_date, session)
+        last_rows = rows
+        new_rows = [
+            row
+            for row in rows
+            if clock_record_signature(row) not in before_signatures and is_recent_clock_record(row, submitted_at)
+        ]
+        if new_rows:
+            if is_practice_plan(config) and not any(row.get("filePath") for row in new_rows):
+                logging.error("新增签到记录没有 filePath，前端可能不会显示图片: %s", new_rows)
+                return False
+            return True
+        if time.monotonic() >= deadline:
+            logging.error("提交后未查询到新增签到记录，最后一次记录查询结果: %s", last_rows)
+            return False
+        time.sleep(interval)
 
 
 def uploaded_image_url(config: dict[str, Any], remark: str) -> str:
@@ -1204,7 +1282,10 @@ def upload_image(config: dict[str, Any], bearer_token: str, session: requests.Se
     )
     response.raise_for_status()
     if is_practice_plan(config):
-        return extract_upload_file_id(response.json())
+        upload_info = extract_upload_file_info(response.json())
+        if upload_info.get("url"):
+            logging.info("学校统一实习上传文件路径: %s", upload_info["url"])
+        return upload_info["id"]
     return extract_upload_remark(response.json())
 
 
@@ -1214,7 +1295,9 @@ def submit_checkin(
     remark: str,
     session: requests.Session,
     now: datetime,
+    slot: dict[str, Any] | None = None,
 ) -> bool:
+    clock_type = clock_type_for_slot(config, slot)
     if is_practice_plan(config):
         url = f"{config['sxsx_base_url']}/portal-api/practiceClock/practiceClock/add"
         payload = {
@@ -1225,7 +1308,7 @@ def submit_checkin(
             "clockAddress": config["clock_address"],
             "fileId": remark,
             "clockTime": now.strftime("%Y-%m-%d %H:%M:%S"),
-            "clockType": config["clock_type"],
+            "clockType": clock_type,
             "clockContent": config.get("clock_content", ""),
         }
     else:
@@ -1237,7 +1320,7 @@ def submit_checkin(
             "clockAddress": config["clock_address"],
             "fileId": "",
             "clockTime": now.strftime("%Y-%m-%d %H:%M:%S"),
-            "clockType": config["clock_type"],
+            "clockType": clock_type,
             "clockContent": config.get("clock_content", ""),
             "lng": config["lng"],
             "lat": config["lat"],
@@ -1292,6 +1375,7 @@ def run_checkin(
 
     def do_submit(current_token: str) -> bool:
         remark = ""
+        submitted_at = datetime.now()
         if config.get("upload_image", True):
             remark = upload_image(config, current_token, session, slot)
             logging.info("图片上传成功: %s", remark)
@@ -1300,7 +1384,18 @@ def run_checkin(
                     raise CheckinError(f"图片上传后未能在限定时间内访问: {uploaded_image_url(config, remark)}")
                 logging.info("图片已确认可访问")
 
-        if submit_checkin(config, current_token, remark, session, now):
+        if submit_checkin(config, current_token, remark, session, now, slot):
+            if is_practice_plan(config) and config.get("verify_submitted_record", True):
+                if not wait_for_submitted_checkin_record(
+                    config,
+                    current_token,
+                    session,
+                    now.date(),
+                    clocks,
+                    submitted_at,
+                    slot,
+                ):
+                    raise CheckinError("签到接口返回成功，但未查询到带图片的新增签到记录")
             logging.info("签到成功")
             return True
         return False

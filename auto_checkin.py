@@ -32,7 +32,13 @@ from uuid import uuid4
 import requests
 
 
-SCRIPT_DIR = Path(__file__).resolve().parent
+def get_script_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+
+SCRIPT_DIR = get_script_dir()
 DEFAULT_CONFIG_FILE = SCRIPT_DIR / "checkin_config.json"
 DEFAULT_TOKEN_FILE = SCRIPT_DIR / "token.json"
 DEFAULT_LOG_FILE = SCRIPT_DIR / "checkin.log"
@@ -74,6 +80,7 @@ ENROLLMENT_YEAR = ""
 # 如果你已经知道，直接填上会更稳。
 AUTONOMY_ID = ""
 USER_ID = ""
+USER_NAME = ""
 NICK_NAME = ""
 
 # 默认签到地址。实际使用建议通过 --bind-account 写入 checkin_config.json。
@@ -142,7 +149,10 @@ def build_global_config() -> dict[str, Any]:
         "enrollment_year": ENROLLMENT_YEAR,
         "autonomy_id": AUTONOMY_ID,
         "user_id": USER_ID,
+        "user_name": USER_NAME,
         "nick_name": NICK_NAME,
+        "plan_type": "",
+        "practice_plan_id": "",
         "clock_address": CLOCK_ADDRESS,
         "lng": LNG,
         "lat": LAT,
@@ -215,7 +225,7 @@ def save_config(config: dict[str, Any], config_path: Path = DEFAULT_CONFIG_FILE)
 
 
 def clear_account_identity_fields(config: dict[str, Any]) -> None:
-    for key in ("manual_bearer_token", "user_id", "nick_name", "autonomy_id"):
+    for key in ("manual_bearer_token", "user_id", "user_name", "nick_name", "autonomy_id", "plan_type", "practice_plan_id"):
         config[key] = ""
 
 
@@ -232,6 +242,8 @@ def save_token_cache(tokens: dict[str, Any], token_file: Path = DEFAULT_TOKEN_FI
 
 
 def update_script_manual_token(token: str, script_path: Path = Path(__file__).resolve()) -> None:
+    if getattr(sys, "frozen", False):
+        return
     try:
         original = script_path.read_text(encoding="utf-8")
         updated = re.sub(
@@ -576,6 +588,25 @@ def extract_upload_remark(payload: dict[str, Any]) -> str:
     raise CheckinError(f"上传成功但未找到图片路径: {decoded}")
 
 
+def extract_upload_file_id(payload: dict[str, Any]) -> str:
+    decoded = decode_sxsx_response(payload)
+    if decoded.get("code") != 200:
+        raise CheckinError(f"上传图片失败: {decoded}")
+
+    data = decoded.get("data")
+    if isinstance(data, dict):
+        for key in ("id", "fileId"):
+            value = data.get(key)
+            if value:
+                return str(value)
+    for key in ("id", "fileId"):
+        value = decoded.get(key)
+        if value:
+            return str(value)
+
+    raise CheckinError(f"上传成功但未找到文件 ID: {decoded}")
+
+
 def build_headers(bearer_token: str | None = None, *, content_type: str | None = "application/json;charset=utf-8") -> dict[str, str]:
     headers = {
         "accept": "application/json, text/javascript, */*; q=0.01",
@@ -630,24 +661,47 @@ def fetch_student_plan(config: dict[str, Any], bearer_token: str, session: reque
     return payload.get("data") or {}
 
 
+def apply_student_plan_context(config: dict[str, Any], plan_data: dict[str, Any]) -> None:
+    autonomy_plan = plan_data.get("autonomyPlan")
+    if autonomy_plan and autonomy_plan.get("id"):
+        config["plan_type"] = "autonomyPlan"
+        config["autonomy_id"] = autonomy_plan["id"]
+        config["practice_plan_id"] = ""
+        return
+
+    practice_plan = plan_data.get("practicePlan")
+    if practice_plan and practice_plan.get("planId"):
+        config["plan_type"] = "practicePlan"
+        config["practice_plan_id"] = practice_plan["planId"]
+        config["autonomy_id"] = ""
+        return
+
+    config["plan_type"] = ""
+    config["autonomy_id"] = ""
+    config["practice_plan_id"] = ""
+    raise CheckinError(f"当前账号未查询到可用实习计划，请确认登录的是有实习计划的账号. plan_data: {plan_data}")
+
+
+def is_practice_plan(config: dict[str, Any]) -> bool:
+    return config.get("plan_type") == "practicePlan"
+
+
 def populate_runtime_config(config: dict[str, Any], bearer_token: str, session: requests.Session, user_info: dict[str, Any] | None = None) -> None:
     previous_user_id = str(config.get("user_id") or "")
     user_info = user_info or fetch_user_info(config, bearer_token, session)
     if user_info:
         config["user_id"] = user_info.get("userId") or config.get("user_id", "")
+        config["user_name"] = user_info.get("userName") or config.get("user_name", "")
         config["nick_name"] = user_info.get("nickName") or config.get("nick_name", "")
     current_user_id = str(config.get("user_id") or "")
     if previous_user_id and current_user_id and previous_user_id != current_user_id:
         config["autonomy_id"] = ""
+        config["practice_plan_id"] = ""
+        config["plan_type"] = ""
 
     plan_data = fetch_student_plan(config, bearer_token, session)
     logging.info(f"Student plan data: {plan_data}")
-    autonomy_plan = plan_data.get("autonomyPlan")
-    if autonomy_plan and autonomy_plan.get("id"):
-        config["autonomy_id"] = autonomy_plan["id"]
-    else:
-        config["autonomy_id"] = ""
-        raise CheckinError(f"当前账号未查询到自主实习 autonomy_id，请确认登录的是有实习计划的账号. plan_data: {plan_data}")
+    apply_student_plan_context(config, plan_data)
 
 
 def fetch_sxsx_bearer_token(config: dict[str, Any], session: requests.Session | None = None) -> str:
@@ -672,6 +726,7 @@ def fetch_sxsx_bearer_token(config: dict[str, Any], session: requests.Session | 
         raise CheckinError(f"未能从 checkAppUserIdNew 获取签到 Token: {payload}")
     if user_info:
         config["user_id"] = user_info.get("userId") or config.get("user_id", "")
+        config["user_name"] = user_info.get("userName") or config.get("user_name", "")
         config["nick_name"] = user_info.get("nickName") or config.get("nick_name", "")
     populate_runtime_config(config, token, session, user_info=user_info)
     persist_bearer_token(config, token)
@@ -804,6 +859,12 @@ def interactive_auth_login_via_selenium(timeout_seconds: int = 300) -> dict[str,
 
 def interactive_auth_login(timeout_seconds: int = 300) -> dict[str, Any]:
     errors: list[str] = []
+    if getattr(sys, "frozen", False):
+        try:
+            return interactive_auth_login_via_selenium(timeout_seconds=timeout_seconds)
+        except Exception as exc:
+            errors.append(f"Selenium 失败: {exc}")
+
     try:
         return interactive_auth_login_via_playwright(timeout_seconds=timeout_seconds)
     except Exception as exc:
@@ -865,8 +926,11 @@ def bind_account(
             "app_user_id": account_config.get("app_user_id", ""),
             "manual_bearer_token": "",
             "user_id": "",
+            "user_name": "",
             "nick_name": account_config.get("nick_name", ""),
             "autonomy_id": "",
+            "plan_type": "",
+            "practice_plan_id": "",
         },
         account_name=account_name,
         keep_empty=True,
@@ -879,8 +943,11 @@ def bind_account(
         "app_user_id": account_config.get("app_user_id", ""),
         "manual_bearer_token": account_config.get("manual_bearer_token", ""),
         "user_id": account_config.get("user_id", ""),
+        "user_name": account_config.get("user_name", ""),
         "nick_name": account_config.get("nick_name", ""),
         "autonomy_id": account_config.get("autonomy_id", ""),
+        "plan_type": account_config.get("plan_type", ""),
+        "practice_plan_id": account_config.get("practice_plan_id", ""),
     }
     apply_account_updates(raw_config, updates, account_name=account_name)
     save_config(raw_config, config_path)
@@ -904,8 +971,11 @@ def ensure_account_session(
                 "app_user_id": account_config.get("app_user_id", ""),
                 "manual_bearer_token": account_config.get("manual_bearer_token", ""),
                 "user_id": account_config.get("user_id", ""),
+                "user_name": account_config.get("user_name", ""),
                 "nick_name": account_config.get("nick_name", ""),
                 "autonomy_id": account_config.get("autonomy_id", ""),
+                "plan_type": account_config.get("plan_type", ""),
+                "practice_plan_id": account_config.get("practice_plan_id", ""),
             },
             account_name=account_name,
         )
@@ -967,18 +1037,29 @@ def get_daily_clocks(
     query_date: date,
     session: requests.Session,
 ) -> list[dict[str, Any]]:
-    url = f"{config['sxsx_base_url']}/portal-api/practice/autonomyClock/getStuDailyClock"
-    payload = request_json(
-        session,
-        "GET",
-        url,
-        params={
+    if is_practice_plan(config):
+        url = f"{config['sxsx_base_url']}/portal-api/practiceClock/practiceClock/getStuDailyClock"
+        params = {
+            "planId": config["practice_plan_id"],
+            "userId": config["user_id"],
+            "queryDate": query_date.strftime("%Y-%m-%d"),
+            "beginQueryDate": "",
+            "endQueryDate": "",
+        }
+    else:
+        url = f"{config['sxsx_base_url']}/portal-api/practice/autonomyClock/getStuDailyClock"
+        params = {
             "autonomyId": config["autonomy_id"],
             "userId": config["user_id"],
             "queryDate": query_date.strftime("%Y-%m-%d"),
             "beginQueryDate": "",
             "endQueryDate": "",
-        },
+        }
+    payload = request_json(
+        session,
+        "GET",
+        url,
+        params=params,
         headers=build_headers(bearer_token),
         timeout=int(config["request_timeout"]),
     )
@@ -1110,7 +1191,10 @@ def wait_for_uploaded_image(config: dict[str, Any], remark: str, session: reques
 
 def upload_image(config: dict[str, Any], bearer_token: str, session: requests.Session, slot: dict[str, Any]) -> str:
     image_source = image_source_for_slot(config, slot)
-    url = f"{config['sxsx_base_url']}/portal-api/practiceClock/practiceClock/uploadClockFile"
+    if is_practice_plan(config):
+        url = f"{config['sxsx_base_url']}/portal-api/common/uploadFileUrl"
+    else:
+        url = f"{config['sxsx_base_url']}/portal-api/practiceClock/practiceClock/uploadClockFile"
     file_name, file_bytes, mime_type = prepare_upload_file(image_source, session, int(config["request_timeout"]))
     response = session.post(
         url,
@@ -1119,6 +1203,8 @@ def upload_image(config: dict[str, Any], bearer_token: str, session: requests.Se
         timeout=int(config["request_timeout"]),
     )
     response.raise_for_status()
+    if is_practice_plan(config):
+        return extract_upload_file_id(response.json())
     return extract_upload_remark(response.json())
 
 
@@ -1129,20 +1215,34 @@ def submit_checkin(
     session: requests.Session,
     now: datetime,
 ) -> bool:
-    url = f"{config['sxsx_base_url']}/portal-api/practice/autonomyClock/add"
-    payload = {
-        "autonomyId": config["autonomy_id"],
-        "userId": config["user_id"],
-        "nickName": config["nick_name"],
-        "clockAddress": config["clock_address"],
-        "fileId": "",
-        "clockTime": now.strftime("%Y-%m-%d %H:%M:%S"),
-        "clockType": config["clock_type"],
-        "clockContent": config.get("clock_content", ""),
-        "lng": config["lng"],
-        "lat": config["lat"],
-        "remark": remark,
-    }
+    if is_practice_plan(config):
+        url = f"{config['sxsx_base_url']}/portal-api/practiceClock/practiceClock/add"
+        payload = {
+            "planId": config["practice_plan_id"],
+            "userId": config["user_id"],
+            "userName": config.get("user_name", ""),
+            "nickName": config["nick_name"],
+            "clockAddress": config["clock_address"],
+            "fileId": remark,
+            "clockTime": now.strftime("%Y-%m-%d %H:%M:%S"),
+            "clockType": config["clock_type"],
+            "clockContent": config.get("clock_content", ""),
+        }
+    else:
+        url = f"{config['sxsx_base_url']}/portal-api/practice/autonomyClock/add"
+        payload = {
+            "autonomyId": config["autonomy_id"],
+            "userId": config["user_id"],
+            "nickName": config["nick_name"],
+            "clockAddress": config["clock_address"],
+            "fileId": "",
+            "clockTime": now.strftime("%Y-%m-%d %H:%M:%S"),
+            "clockType": config["clock_type"],
+            "clockContent": config.get("clock_content", ""),
+            "lng": config["lng"],
+            "lat": config["lat"],
+            "remark": remark,
+        }
     decoded = request_json(
         session,
         "POST",

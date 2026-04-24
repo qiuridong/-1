@@ -325,10 +325,11 @@ def test_apply_account_updates_updates_named_account():
 
 def test_prepare_bind_setup_updates_geocodes_address_and_images(monkeypatch):
     module = load_module()
-    monkeypatch.setattr(module, "geocode_address_to_gcj02", lambda address, session=None: (115.1, 28.2))
+    monkeypatch.setattr(module, "geocode_address_to_gcj02", lambda address, config=None, session=None: (115.1, 28.2))
     monkeypatch.setattr(module, "validate_image_source", lambda path_value: None)
     account_config = {
         "clock_address": "旧地址",
+        "amap_key": "",
         "proof_image_path": "old.jpg",
         "proof_images": {"morning": "m-old.jpg", "evening": "e-old.jpg"},
     }
@@ -346,6 +347,40 @@ def test_prepare_bind_setup_updates_geocodes_address_and_images(monkeypatch):
     assert updates["lat"] == 28.2
     assert updates["proof_image_path"] == "proof.jpg"
     assert updates["proof_images"] == {"morning": "morning.jpg", "evening": "evening.jpg"}
+
+
+def test_geocode_address_to_gcj02_uses_amap_location_when_key_present():
+    module = load_module()
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "status": "1",
+                "info": "OK",
+                "geocodes": [{"location": "115.123,28.456"}],
+            }
+
+    class Session:
+        def __init__(self):
+            self.calls = []
+
+        def get(self, url, params=None, **kwargs):
+            self.calls.append((url, params))
+            return Response()
+
+    session = Session()
+    lng, lat = module.geocode_address_to_gcj02("江西省南昌市青山湖区京东镇", {"amap_key": "test-key"}, session=session)
+
+    assert (lng, lat) == (115.123, 28.456)
+    assert session.calls == [
+        (
+            module.AMAP_GEOCODER_URL,
+            {"address": "江西省南昌市青山湖区京东镇", "output": "json", "key": "test-key"},
+        )
+    ]
 
 
 def test_geocode_address_to_gcj02_retries_with_inferred_province(monkeypatch):

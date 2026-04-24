@@ -1,0 +1,52 @@
+{
+  "name": "default",
+  "sxsx_base_url": "https://sxsx.jxeduyun.com:7780",
+  "manual_bearer_token": "",
+  "app_user_id": "",
+  "login_account": "",
+  "login_password": "",
+  "login_user_type": "student",
+  "enrollment_year": "",
+  "autonomy_id": "",
+  "user_id": "",
+  "user_name": "",
+  "nick_name": "",
+  "plan_type": "",
+  "practice_plan_id": "",
+  "clock_address": "",
+  "amap_key": "",
+  "lng": 0.0,
+  "lat": 0.0,
+  "proof_image_path": "proof.jpg",
+  "proof_images": {
+    "morning": "proof_morning.jpg",
+    "evening": "proof_evening.jpg"
+  },
+  "upload_image": true,
+  "verify_uploaded_image": true,
+  "verify_uploaded_image_timeout": 60,
+  "verify_uploaded_image_interval": 2,
+  "clock_type": "签到",
+  "clock_content": "",
+  "skip_if_already_signed": true,
+  "request_timeout": 30,
+  "accounts": [],
+  "slots": [
+    {
+      "name": "morning",
+      "label": "早上签到",
+      "time": "08:05",
+      "start_hour": 0,
+      "end_hour": 12,
+      "jitter_minutes": 5
+    },
+    {
+      "name": "evening",
+      "label": "晚上签到",
+      "time": "19:05",
+      "start_hour": 12,
+      "end_hour": 24,
+      "jitter_minutes": 5
+    }
+  ]
+}

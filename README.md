@@ -44,9 +44,39 @@ python -m playwright install
 `win` 分支已提供打包好的 Windows 可执行文件：
 
 - [下载 jiangzhi-checkin.exe](https://github.com/qiuridong/-1/raw/win/dist/jiangzhi-checkin.exe)
+- [下载 checkin_config.example.json](https://raw.githubusercontent.com/qiuridong/-1/win/checkin_config.example.json)
 
 EXE 版不需要安装 Python，也不需要执行 `python -m playwright install`。它使用本机已安装的 Edge 或 Chrome 完成浏览器授权。
 
+国内服务器首次绑定时，默认不要再依赖 `nominatim.openstreetmap.org`。当前版本已经支持在本地配置里填写高德 Key：
+
+```json
+{
+  "amap_key": ""
+}
+```
+
+说明：
+
+- GitHub 仓库里的默认配置项只保留空字符串，不会提交真实 Key
+- 你需要在自己机器上的 `checkin_config.json` 里填写真实 `amap_key`
+- 如果 `amap_key` 为空，脚本才会回退到旧的 Nominatim 地址解析；该服务在国内服务器上通常不稳定
+- `checkin_config.json` 和 `token.json` 建议与 `jiangzhi-checkin.exe` 一起部署
+
+如果本地还没有 `checkin_config.json`，有两种办法：
+
+1. 直接复制模板
+   - 把 `checkin_config.example.json` 改名为 `checkin_config.json`
+2. 让程序自动生成
+   - 运行 `.\jiangzhi-checkin.exe --init-config`
+
+最少需要手动填写的配置通常是：
+
+- `amap_key`
+- `clock_address`
+- `proof_image_path`
+- `proof_images.morning`
+- `proof_images.evening`
 首次绑定：
 
 ```powershell
@@ -80,7 +110,10 @@ EXE 版不需要安装 Python，也不需要执行 `python -m playwright install
 说明：如果 `checkin_config.json` 不在 EXE 同目录，请加 `--config 配置文件路径`。
 
 ### Python 版
+<<<<<<< HEAD
 
+=======
+>>>>>>> main
 首次绑定或重新绑定：
 
 ```powershell

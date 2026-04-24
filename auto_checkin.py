@@ -51,6 +51,7 @@ USER_AGENT = (
 )
 AUTH_BASE_URL = "https://auth.jx.smartedu.cn:8880"
 AUTH_USER_AGENT = "okhttp/4.10.0"
+AMAP_GEOCODER_URL = "https://restapi.amap.com/v3/geocode/geo"
 BIND_GEOCODER_URL = "https://nominatim.openstreetmap.org/search"
 EDGE_BINARY_PATH = Path(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe")
 CHROME_BINARY_PATH = Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe")
@@ -85,6 +86,7 @@ NICK_NAME = ""
 
 # 默认签到地址。实际使用建议通过 --bind-account 写入 checkin_config.json。
 CLOCK_ADDRESS = ""
+AMAP_KEY = ""
 
 # 签到经纬度，GCJ-02
 LNG = 0.0
@@ -154,6 +156,7 @@ def build_global_config() -> dict[str, Any]:
         "plan_type": "",
         "practice_plan_id": "",
         "clock_address": CLOCK_ADDRESS,
+        "amap_key": AMAP_KEY,
         "lng": LNG,
         "lat": LAT,
         "proof_image_path": PROOF_IMAGE_PATH,
@@ -402,7 +405,7 @@ def wgs84_to_gcj02(lng: float, lat: float) -> tuple[float, float]:
     return lng + dlng, lat + dlat
 
 
-def query_geocoder_rows(address: str, session: requests.Session) -> list[dict[str, Any]]:
+def query_nominatim_rows(address: str, session: requests.Session) -> list[dict[str, Any]]:
     response = session.get(
         BIND_GEOCODER_URL,
         params={"q": address, "format": "jsonv2", "limit": 1},
@@ -414,6 +417,32 @@ def query_geocoder_rows(address: str, session: requests.Session) -> list[dict[st
     if not isinstance(rows, list):
         return []
     return rows
+
+
+def query_amap_rows(address: str, amap_key: str, session: requests.Session) -> list[dict[str, Any]]:
+    response = session.get(
+        AMAP_GEOCODER_URL,
+        params={"address": address, "output": "json", "key": amap_key},
+        headers={"user-agent": f"auto-checkin/1.0 ({AUTH_BASE_URL})"},
+        timeout=30,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    if not isinstance(payload, dict):
+        return []
+    if payload.get("status") != "1":
+        raise CheckinError(f"高德地址解析失败: {payload.get('info') or payload}")
+    rows = payload.get("geocodes") or []
+    if not isinstance(rows, list):
+        return []
+    return rows
+
+
+def query_geocoder_rows(address: str, session: requests.Session, config: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    amap_key = str((config or {}).get("amap_key") or "").strip()
+    if amap_key:
+        return query_amap_rows(address, amap_key, session)
+    return query_nominatim_rows(address, session)
 
 
 def extract_parent_region(address: str) -> str | None:
@@ -433,26 +462,34 @@ def extract_state_name(display_name: str) -> str | None:
 
 
 def row_to_gcj02(row: dict[str, Any]) -> tuple[float, float]:
+    location = str(row.get("location") or "").strip()
+    if location:
+        lng_text, lat_text = location.split(",", 1)
+        return float(lng_text), float(lat_text)
     lng = float(row["lon"])
     lat = float(row["lat"])
     return wgs84_to_gcj02(lng, lat)
 
 
-def geocode_address_to_gcj02(address: str, session: requests.Session | None = None) -> tuple[float, float]:
+def geocode_address_to_gcj02(
+    address: str,
+    config: dict[str, Any] | None = None,
+    session: requests.Session | None = None,
+) -> tuple[float, float]:
     session = session or requests.Session()
-    rows = query_geocoder_rows(address, session)
+    rows = query_geocoder_rows(address, session, config)
     if rows:
         return row_to_gcj02(rows[0])
 
     parent_region = extract_parent_region(address)
     parent_row: dict[str, Any] | None = None
     if parent_region and parent_region != address:
-        parent_rows = query_geocoder_rows(parent_region, session)
+        parent_rows = query_geocoder_rows(parent_region, session, config)
         if parent_rows:
             parent_row = parent_rows[0]
             state_name = extract_state_name(str(parent_row.get("display_name", "")))
             if state_name:
-                expanded_rows = query_geocoder_rows(f"{state_name}{address}", session)
+                expanded_rows = query_geocoder_rows(f"{state_name}{address}", session, config)
                 if expanded_rows:
                     logging.info("地址解析已自动补全省份: %s -> %s%s", address, state_name, address)
                     return row_to_gcj02(expanded_rows[0])
@@ -483,7 +520,7 @@ def prepare_bind_setup_updates(
         validate_image_source(morning_image)
     if evening_image:
         validate_image_source(evening_image)
-    lng, lat = geocode_address_to_gcj02(address)
+    lng, lat = geocode_address_to_gcj02(address, config=account_config)
     proof_images: dict[str, str] = {}
     if morning_image:
         proof_images["morning"] = morning_image

@@ -110,10 +110,6 @@ EXE 版不需要安装 Python，也不需要执行 `python -m playwright install
 说明：如果 `checkin_config.json` 不在 EXE 同目录，请加 `--config 配置文件路径`。
 
 ### Python 版
-<<<<<<< HEAD
-
-=======
->>>>>>> main
 首次绑定或重新绑定：
 
 ```powershell

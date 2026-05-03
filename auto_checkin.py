@@ -625,43 +625,6 @@ def extract_upload_remark(payload: dict[str, Any]) -> str:
     raise CheckinError(f"上传成功但未找到图片路径: {decoded}")
 
 
-def extract_upload_file_id(payload: dict[str, Any]) -> str:
-    return extract_upload_file_info(payload)["id"]
-
-
-def extract_upload_file_info(payload: dict[str, Any]) -> dict[str, str]:
-    decoded = decode_sxsx_response(payload)
-    if decoded.get("code") != 200:
-        raise CheckinError(f"上传图片失败: {decoded}")
-
-    file_id = ""
-    file_url = ""
-    data = decoded.get("data")
-    candidates: list[dict[str, Any]] = []
-    if isinstance(data, dict):
-        candidates.append(data)
-        nested = data.get("data")
-        if isinstance(nested, dict):
-            candidates.append(nested)
-    candidates.append(decoded)
-
-    for candidate in candidates:
-        for key in ("id", "fileId"):
-            value = candidate.get(key)
-            if value:
-                file_id = str(value)
-                break
-        for key in ("url", "filePath"):
-            value = candidate.get(key)
-            if value:
-                file_url = str(value)
-                break
-        if file_id:
-            return {"id": file_id, "url": file_url}
-
-    raise CheckinError(f"上传成功但未找到文件 ID: {decoded}")
-
-
 def build_headers(bearer_token: str | None = None, *, content_type: str | None = "application/json;charset=utf-8") -> dict[str, str]:
     headers = {
         "accept": "application/json, text/javascript, */*; q=0.01",
@@ -1306,10 +1269,7 @@ def wait_for_uploaded_image(config: dict[str, Any], remark: str, session: reques
 
 def upload_image(config: dict[str, Any], bearer_token: str, session: requests.Session, slot: dict[str, Any]) -> str:
     image_source = image_source_for_slot(config, slot)
-    if is_practice_plan(config):
-        url = f"{config['sxsx_base_url']}/portal-api/common/uploadFileUrl"
-    else:
-        url = f"{config['sxsx_base_url']}/portal-api/practiceClock/practiceClock/uploadClockFile"
+    url = f"{config['sxsx_base_url']}/portal-api/practiceClock/practiceClock/uploadClockFile"
     file_name, file_bytes, mime_type = prepare_upload_file(image_source, session, int(config["request_timeout"]))
     response = session.post(
         url,
@@ -1318,11 +1278,6 @@ def upload_image(config: dict[str, Any], bearer_token: str, session: requests.Se
         timeout=int(config["request_timeout"]),
     )
     response.raise_for_status()
-    if is_practice_plan(config):
-        upload_info = extract_upload_file_info(response.json())
-        if upload_info.get("url"):
-            logging.info("学校统一实习上传文件路径: %s", upload_info["url"])
-        return upload_info["id"]
     return extract_upload_remark(response.json())
 
 
@@ -1343,10 +1298,13 @@ def submit_checkin(
             "userName": config.get("user_name", ""),
             "nickName": config["nick_name"],
             "clockAddress": config["clock_address"],
-            "fileId": remark,
+            "fileId": "",
             "clockTime": now.strftime("%Y-%m-%d %H:%M:%S"),
             "clockType": clock_type,
             "clockContent": config.get("clock_content", ""),
+            "lng": config["lng"],
+            "lat": config["lat"],
+            "remark": remark,
         }
     else:
         url = f"{config['sxsx_base_url']}/portal-api/practice/autonomyClock/add"
@@ -1416,7 +1374,7 @@ def run_checkin(
         if config.get("upload_image", True):
             remark = upload_image(config, current_token, session, slot)
             logging.info("图片上传成功: %s", remark)
-            if config.get("verify_uploaded_image", True) and not is_practice_plan(config):
+            if config.get("verify_uploaded_image", True):
                 if not wait_for_uploaded_image(config, remark, session):
                     raise CheckinError(f"图片上传后未能在限定时间内访问: {uploaded_image_url(config, remark)}")
                 logging.info("图片已确认可访问")

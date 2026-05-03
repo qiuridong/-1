@@ -232,6 +232,63 @@ def clear_account_identity_fields(config: dict[str, Any]) -> None:
         config[key] = ""
 
 
+ACCOUNT_SCOPED_FIELDS = (
+    "app_user_id",
+    "manual_bearer_token",
+    "user_id",
+    "user_name",
+    "nick_name",
+    "autonomy_id",
+    "plan_type",
+    "practice_plan_id",
+    "clock_address",
+    "lng",
+    "lat",
+    "proof_image_path",
+    "proof_images",
+    "clock_content",
+    "clock_types",
+    "token_file",
+)
+
+
+def _top_level_has_bound_account(raw_config: dict[str, Any]) -> bool:
+    for key in ("app_user_id", "manual_bearer_token", "autonomy_id", "practice_plan_id"):
+        if raw_config.get(key):
+            return True
+    return False
+
+
+def _strip_top_level_identity(raw_config: dict[str, Any]) -> None:
+    for key in ACCOUNT_SCOPED_FIELDS:
+        default_value = DEFAULT_CONFIG.get(key, "")
+        raw_config[key] = deepcopy(default_value)
+
+
+def ensure_account_entry(raw_config: dict[str, Any], account_name: str) -> None:
+    """Make sure raw_config['accounts'] contains an entry named account_name.
+
+    On first multi-account use, promotes top-level identity fields into accounts[0]
+    so the previously bound single account is preserved alongside the new one.
+    """
+    accounts = raw_config.get("accounts")
+    if not isinstance(accounts, list):
+        accounts = []
+    raw_config["accounts"] = accounts
+
+    if not accounts and _top_level_has_bound_account(raw_config):
+        seed_name = str(raw_config.get("name") or "default")
+        seed: dict[str, Any] = {"name": seed_name}
+        for key in ACCOUNT_SCOPED_FIELDS:
+            if key in raw_config:
+                seed[key] = deepcopy(raw_config[key])
+        accounts.append(seed)
+        _strip_top_level_identity(raw_config)
+
+    if not any(account.get("name", "default") == account_name for account in accounts):
+        accounts.append({"name": account_name})
+
+
 def load_token_cache(token_file: Path = DEFAULT_TOKEN_FILE) -> dict[str, Any]:
     if not token_file.exists():
         return {}
@@ -925,6 +982,9 @@ def bind_account(
     account_name: str | None = None,
     timeout_seconds: int = 300,
 ) -> dict[str, Any]:
+    if account_name:
+        ensure_account_entry(raw_config, account_name)
+        save_config(raw_config, config_path)
     account_config = get_single_account_config(raw_config, account_name)
     setup_updates = prompt_bind_setup(account_config)
     account_config.update(setup_updates)

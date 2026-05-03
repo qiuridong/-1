@@ -54,22 +54,6 @@ def test_extract_upload_remark_from_encrypted_response():
     assert module.extract_upload_remark(response) == "/file6/upload/2026/04/23/d05e76dc037e43fd95da52bd301a8058.png"
 
 
-def test_extract_upload_file_info_from_top_level_common_upload_response():
-    module = load_module()
-
-    response = {
-        "code": 200,
-        "msg": "操作成功",
-        "id": "file-id-1",
-        "url": "/file6/upload/2026/04/23/a.jpg",
-    }
-
-    assert module.extract_upload_file_info(response) == {
-        "id": "file-id-1",
-        "url": "/file6/upload/2026/04/23/a.jpg",
-    }
-
-
 def test_slot_duplicate_detection_uses_time_window():
     module = load_module()
     clocks = [
@@ -752,7 +736,7 @@ def test_practice_plan_daily_query_uses_practice_clock_endpoint(monkeypatch):
     ]
 
 
-def test_practice_plan_submit_uses_plan_id_and_file_id(monkeypatch):
+def test_practice_plan_submit_uses_plan_id_and_remark(monkeypatch):
     module = load_module()
     calls = []
 
@@ -774,9 +758,11 @@ def test_practice_plan_submit_uses_plan_id_and_file_id(monkeypatch):
             "clock_address": "地址",
             "clock_type": "签到",
             "clock_content": "",
+            "lng": 115.9,
+            "lat": 28.7,
         },
         "TOKEN",
-        "file-1",
+        "/file6/upload/2026/04/23/abc.png",
         object(),
         datetime(2026, 4, 23, 8, 5, 0),
         {"name": "morning"},
@@ -793,10 +779,13 @@ def test_practice_plan_submit_uses_plan_id_and_file_id(monkeypatch):
                 "userName": "student-name",
                 "nickName": "学生",
                 "clockAddress": "地址",
-                "fileId": "file-1",
+                "fileId": "",
                 "clockTime": "2026-04-23 08:05:00",
                 "clockType": "签到",
                 "clockContent": "",
+                "lng": 115.9,
+                "lat": 28.7,
+                "remark": "/file6/upload/2026/04/23/abc.png",
             },
         )
     ]
@@ -824,9 +813,11 @@ def test_practice_plan_evening_submit_uses_sign_out_clock_type(monkeypatch):
             "clock_address": "地址",
             "clock_type": "签到",
             "clock_content": "",
+            "lng": 115.9,
+            "lat": 28.7,
         },
         "TOKEN",
-        "file-1",
+        "/file6/upload/2026/04/23/abc.png",
         object(),
         datetime(2026, 4, 23, 19, 5, 0),
         {"name": "evening"},
@@ -836,9 +827,10 @@ def test_practice_plan_evening_submit_uses_sign_out_clock_type(monkeypatch):
     assert calls[0]["clockType"] == "签退"
 
 
-def test_practice_plan_run_checkin_skips_uploaded_image_url_verification(monkeypatch):
+def test_practice_plan_run_checkin_verifies_uploaded_image_url(monkeypatch):
     module = load_module()
     submitted = []
+    verified = []
 
     monkeypatch.setattr(
         module,
@@ -846,12 +838,17 @@ def test_practice_plan_run_checkin_skips_uploaded_image_url_verification(monkeyp
         lambda config, slot_name, now: {"name": "morning", "label": "早上签到", "start_hour": 0, "end_hour": 12},
     )
     monkeypatch.setattr(module, "get_daily_clocks", lambda config, bearer_token, query_date, session: [])
-    monkeypatch.setattr(module, "upload_image", lambda config, bearer_token, session, slot: "file-id-1")
+    monkeypatch.setattr(
+        module,
+        "upload_image",
+        lambda config, bearer_token, session, slot: "/file6/upload/2026/04/23/abc.png",
+    )
 
-    def fail_wait_for_uploaded_image(config, remark, session):
-        raise AssertionError("practicePlan uploads return fileId, not an image URL")
+    def fake_wait_for_uploaded_image(config, remark, session):
+        verified.append(remark)
+        return True
 
-    monkeypatch.setattr(module, "wait_for_uploaded_image", fail_wait_for_uploaded_image)
+    monkeypatch.setattr(module, "wait_for_uploaded_image", fake_wait_for_uploaded_image)
 
     def fake_submit_checkin(config, bearer_token, remark, session, now, slot=None):
         submitted.append(remark)
@@ -874,7 +871,8 @@ def test_practice_plan_run_checkin_skips_uploaded_image_url_verification(monkeyp
     )
 
     assert ok is True
-    assert submitted == ["file-id-1"]
+    assert submitted == ["/file6/upload/2026/04/23/abc.png"]
+    assert verified == ["/file6/upload/2026/04/23/abc.png"]
 
 
 def test_scheduler_evening_zero_records_runs_makeup_double_checkin(monkeypatch):

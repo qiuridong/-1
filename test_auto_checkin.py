@@ -1014,3 +1014,133 @@ def test_persist_bearer_token_updates_runtime_cache_and_script(monkeypatch):
     assert config["manual_bearer_token"] == "NEW_TOKEN"
     assert saved[0][0]["sxsx_bearer_token"] == "NEW_TOKEN"
     assert written == ["NEW_TOKEN"]
+
+
+def test_ensure_account_entry_promotes_top_level_to_first_account():
+    module = load_module()
+    raw_config = {
+        "name": "default",
+        "app_user_id": "uid-1",
+        "manual_bearer_token": "tok-1",
+        "user_id": "u1",
+        "nick_name": "Alice",
+        "autonomy_id": "a1",
+        "plan_type": "autonomyPlan",
+        "clock_address": "Addr 1",
+        "lng": 115.9,
+        "lat": 28.7,
+        "proof_image_path": "proof.jpg",
+        "proof_images": {"morning": "m.jpg", "evening": "e.jpg"},
+        "amap_key": "shared-amap-key",
+        "accounts": [],
+    }
+
+    module.ensure_account_entry(raw_config, "bob")
+
+    assert [acc["name"] for acc in raw_config["accounts"]] == ["default", "bob"]
+    first = raw_config["accounts"][0]
+    assert first["app_user_id"] == "uid-1"
+    assert first["autonomy_id"] == "a1"
+    assert first["clock_address"] == "Addr 1"
+    assert first["proof_images"] == {"morning": "m.jpg", "evening": "e.jpg"}
+    assert raw_config["app_user_id"] == ""
+    assert raw_config["autonomy_id"] == ""
+    assert raw_config["lng"] == 0.0
+    assert raw_config["amap_key"] == "shared-amap-key"
+
+
+def test_ensure_account_entry_appends_when_top_level_unbound():
+    module = load_module()
+    raw_config = {"name": "default", "app_user_id": "", "manual_bearer_token": "", "accounts": []}
+
+    module.ensure_account_entry(raw_config, "alice")
+
+    assert raw_config["accounts"] == [{"name": "alice"}]
+
+
+def test_ensure_account_entry_appends_to_existing_list_without_migrating():
+    module = load_module()
+    raw_config = {
+        "name": "default",
+        "app_user_id": "uid-orphan",
+        "accounts": [{"name": "alice", "app_user_id": "uid-alice"}],
+    }
+
+    module.ensure_account_entry(raw_config, "bob")
+
+    assert [acc["name"] for acc in raw_config["accounts"]] == ["alice", "bob"]
+    assert raw_config["accounts"][0]["app_user_id"] == "uid-alice"
+    assert raw_config["app_user_id"] == "uid-orphan"
+
+
+def test_ensure_account_entry_is_idempotent_for_existing_name():
+    module = load_module()
+    raw_config = {
+        "name": "default",
+        "accounts": [{"name": "alice", "app_user_id": "uid-alice"}],
+    }
+
+    module.ensure_account_entry(raw_config, "alice")
+
+    assert raw_config["accounts"] == [{"name": "alice", "app_user_id": "uid-alice"}]
+
+
+def test_bind_account_creates_second_account_entry(monkeypatch, tmp_path):
+    module = load_module()
+    raw_config = {
+        "name": "default",
+        "app_user_id": "uid-default",
+        "manual_bearer_token": "tok-default",
+        "autonomy_id": "auto-default",
+        "plan_type": "autonomyPlan",
+        "clock_address": "Old Addr",
+        "lng": 115.9,
+        "lat": 28.7,
+        "proof_image_path": "proof.jpg",
+        "proof_images": {"morning": "m.jpg", "evening": "e.jpg"},
+        "accounts": [],
+    }
+    config_path = tmp_path / "checkin_config.json"
+
+    monkeypatch.setattr(
+        module,
+        "prompt_bind_setup",
+        lambda account_config: {
+            "clock_address": "New Addr",
+            "lng": 116.4,
+            "lat": 39.9,
+            "proof_image_path": "proof2.jpg",
+            "proof_images": {"morning": "m2.jpg"},
+        },
+    )
+    monkeypatch.setattr(module, "interactive_auth_login", lambda timeout_seconds=300: {"auth_token": "AUTH"})
+    monkeypatch.setattr(
+        module,
+        "fetch_auth_current_user",
+        lambda auth_state, session=None: {"id": "uid-bob", "nickName": "Bob"},
+    )
+
+    def fake_fetch_token(config, session=None):
+        config["user_id"] = "u-bob"
+        config["nick_name"] = config.get("nick_name") or "Bob"
+        config["autonomy_id"] = "auto-bob"
+        config["plan_type"] = "autonomyPlan"
+        config["manual_bearer_token"] = "BOB_TOKEN"
+        return "BOB_TOKEN"
+
+    monkeypatch.setattr(module, "fetch_sxsx_bearer_token", fake_fetch_token)
+
+    bound = module.bind_account(raw_config, config_path=config_path, account_name="bob")
+
+    assert bound["bearer_token"] == "BOB_TOKEN"
+    names = [acc["name"] for acc in raw_config["accounts"]]
+    assert names == ["default", "bob"]
+    default_entry = raw_config["accounts"][0]
+    assert default_entry["app_user_id"] == "uid-default"
+    assert default_entry["autonomy_id"] == "auto-default"
+    bob_entry = raw_config["accounts"][1]
+    assert bob_entry["app_user_id"] == "uid-bob"
+    assert bob_entry["clock_address"] == "New Addr"
+    assert bob_entry["autonomy_id"] == "auto-bob"
+    assert raw_config["app_user_id"] == ""
+    assert raw_config["autonomy_id"] == ""
